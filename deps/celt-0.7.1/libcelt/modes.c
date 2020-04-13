@@ -14,10 +14,6 @@
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
    
-   - Neither the name of the Xiph.org Foundation nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-   
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -42,44 +38,43 @@
 #include "stack_alloc.h"
 #include "quant_bands.h"
 
-#ifdef STATIC_MODES
-#include "static_modes.c"
-#endif
+static const celt_int16 eband5ms[] = {
+/*0  200 400 600 800  1k 1.2 1.4 1.6  2k 2.4 2.8 3.2  4k 4.8 5.6 6.8  8k 9.6 12k 15.6 */
+  0,  1,  2,  3,  4,  5,  6,  7,  8, 10, 12, 14, 16, 20, 24, 28, 34, 40, 48, 60, 78, 100
+};
 
-#define MODEVALID   0xa110ca7e
-#define MODEPARTIAL 0x7eca10a1
-#define MODEFREED   0xb10cf8ee
+/* Alternate tuning (partially derived from Vorbis) */
+#define BITALLOC_SIZE 11
+/* Bit allocation table in units of 1/32 bit/sample (0.1875 dB SNR) */
+static const unsigned char band_allocation[] = {
+/*0  200 400 600 800  1k 1.2 1.4 1.6  2k 2.4 2.8 3.2  4k 4.8 5.6 6.8  8k 9.6 12k 15.6 */
+  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+ 90, 80, 75, 69, 63, 56, 49, 40, 34, 29, 20, 18, 10,  0,  0,  0,  0,  0,  0,  0,  0,
+110,100, 90, 84, 78, 71, 65, 58, 51, 45, 39, 32, 26, 20, 12,  0,  0,  0,  0,  0,  0,
+118,110,103, 93, 86, 80, 75, 70, 65, 59, 53, 47, 40, 31, 23, 15,  4,  0,  0,  0,  0,
+126,119,112,104, 95, 89, 83, 78, 72, 66, 60, 54, 47, 39, 32, 25, 17, 12,  1,  0,  0,
+134,127,120,114,103, 97, 91, 85, 78, 72, 66, 60, 54, 47, 41, 35, 29, 23, 16, 10,  1,
+144,137,130,124,113,107,101, 95, 88, 82, 76, 70, 64, 57, 51, 45, 39, 33, 26, 15,  1,
+152,145,138,132,123,117,111,105, 98, 92, 86, 80, 74, 67, 61, 55, 49, 43, 36, 20,  1,
+162,155,148,142,133,127,121,115,108,102, 96, 90, 84, 77, 71, 65, 59, 53, 46, 30,  1,
+172,165,158,152,143,137,131,125,118,112,106,100, 94, 87, 81, 75, 69, 63, 56, 45, 20,
+200,200,200,200,200,200,200,200,198,193,188,183,178,173,168,163,158,153,148,129,104,
+};
+
+#ifndef CUSTOM_MODES_ONLY
+ #ifdef FIXED_POINT
+  #include "static_modes_fixed.c"
+ #else
+  #include "static_modes_float.c"
+ #endif
+#endif /* CUSTOM_MODES_ONLY */
 
 #ifndef M_PI
 #define M_PI 3.141592653
 #endif
 
 
-int celt_mode_info(const CELTMode *mode, int request, celt_int32 *value)
-{
-   if (check_mode(mode) != CELT_OK)
-      return CELT_INVALID_MODE;
-   switch (request)
-   {
-      case CELT_GET_FRAME_SIZE:
-         *value = mode->mdctSize;
-         break;
-      case CELT_GET_LOOKAHEAD:
-         *value = mode->overlap;
-         break;
-      case CELT_GET_BITSTREAM_VERSION:
-         *value = CELT_BITSTREAM_VERSION;
-         break;
-      case CELT_GET_SAMPLE_RATE:
-         *value = mode->Fs;
-         break;
-      default:
-         return CELT_UNIMPLEMENTED;
-   }
-   return CELT_OK;
-}
-
-#ifndef STATIC_MODES
+#ifdef CUSTOM_MODES
 
 /* Defining 25 critical bands for the full 0-20 kHz audio bandwidth
    Taken from http://ccrma.stanford.edu/~jos/bbt/Bark_Frequency_Scale.html */
@@ -92,42 +87,20 @@ static const celt_int16 bark_freq[BARK_BANDS+1] = {
    6400,  7700,  9500, 12000, 15500,
   20000};
 
-/* This allocation table is per critical band. When creating a mode, the bits get added together 
-   into the codec bands, which are sometimes larger than one critical band at low frequency */
-
-#ifdef STDIN_TUNING
-int BITALLOC_SIZE;
-int *band_allocation;
-#else
-#define BITALLOC_SIZE 12
-static const int band_allocation[BARK_BANDS*BITALLOC_SIZE] = 
-   /* 0 100 200 300 400 510 630 770 920 1k  1.2 1.5 1.7 2k  2.3 2.7 3.1 3.7 4.4 5.3 6.4 7.7 9.5 12k 15k  */
-   {  4,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, /*0*/
-      2,  2,  1,  1,  2,  2,  1,  1,  1,  1,  1,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, /*1*/
-      2,  2,  2,  1,  2,  2,  2,  2,  2,  2,  2,  2,  4,  5,  7,  7,  7,  5,  4,  0,  0,  0,  0,  0,  0, /*2*/
-      2,  2,  2,  2,  3,  3,  3,  3,  3,  3,  3,  3,  5,  6,  8,  8,  8,  6,  5,  4,  0,  0,  0,  0,  0, /*3*/
-      3,  2,  2,  2,  3,  4,  4,  4,  4,  4,  4,  4,  6,  7,  9,  9,  9,  7,  6,  5,  5,  5,  0,  0,  0, /*4*/
-      3,  3,  3,  4,  4,  5,  6,  6,  6,  6,  6,  7,  7,  9, 10, 10, 10,  9,  6,  5,  5,  5,  5,  1,  0, /*5*/
-      4,  3,  3,  4,  6,  7,  7,  7,  7,  7,  8,  9,  9,  9, 11, 10, 10,  9,  9,  8, 11, 10, 10,  1,  0, /*6*/
-      5,  5,  5,  6,  7,  7,  7,  7,  8,  8,  9, 10, 10, 12, 12, 11, 11, 17, 12, 15, 15, 20, 18, 10,  1, /*7*/
-      6,  7,  7,  7,  8,  8,  8,  8,  9, 10, 11, 12, 14, 17, 18, 21, 22, 27, 29, 39, 37, 38, 40, 35,  1, /*8*/
-      7,  7,  7,  8,  8,  8, 10, 10, 10, 13, 14, 18, 20, 24, 28, 32, 32, 35, 38, 38, 42, 50, 59, 54, 31, /*9*/
-      8,  8,  8,  8,  8,  9, 10, 12, 14, 20, 22, 25, 28, 30, 35, 42, 46, 50, 55, 60, 62, 62, 72, 82, 62, /*10*/
-      9,  9,  9, 10, 12, 13, 15, 18, 22, 30, 32, 35, 40, 45, 55, 62, 66, 70, 85, 90, 92, 92, 92,102, 92, /*11*/
-   };
-#endif
-
-static celt_int16 *compute_ebands(celt_int32 Fs, int frame_size, int nbShortMdcts, int *nbEBands)
+static celt_int16 *compute_ebands(celt_int32 Fs, int frame_size, int res, int *nbEBands)
 {
-   int min_bins = 3;
    celt_int16 *eBands;
-   int i, res, min_width, lin, low, high, nBark, offset=0;
+   int i, j, lin, low, high, nBark, offset=0;
 
-   /*if (min_bins < nbShortMdcts)
-      min_bins = nbShortMdcts;*/
-   res = (Fs+frame_size)/(2*frame_size);
-   min_width = min_bins*res;
-
+   /* All modes that have 2.5 ms short blocks use the same definition */
+   if (Fs == 400*(celt_int32)frame_size)
+   {
+      *nbEBands = sizeof(eband5ms)/sizeof(eband5ms[0])-1;
+      eBands = celt_alloc(sizeof(celt_int16)*(*nbEBands+1));
+      for (i=0;i<*nbEBands+1;i++)
+         eBands[i] = eband5ms[i];
+      return eBands;
+   }
    /* Find the number of critical bands supported by our sampling rate */
    for (nBark=1;nBark<BARK_BANDS;nBark++)
     if (bark_freq[nBark+1]*2 >= Fs)
@@ -135,218 +108,253 @@ static celt_int16 *compute_ebands(celt_int32 Fs, int frame_size, int nbShortMdct
 
    /* Find where the linear part ends (i.e. where the spacing is more than min_width */
    for (lin=0;lin<nBark;lin++)
-      if (bark_freq[lin+1]-bark_freq[lin] >= min_width)
+      if (bark_freq[lin+1]-bark_freq[lin] >= res)
          break;
-   
-   low = ((bark_freq[lin]/res)+(min_bins-1))/min_bins;
+
+   low = (bark_freq[lin]+res/2)/res;
    high = nBark-lin;
    *nbEBands = low+high;
-   eBands = (celt_int16 *) celt_alloc(sizeof(celt_int16)*(*nbEBands+2));
+   eBands = celt_alloc(sizeof(celt_int16)*(*nbEBands+2));
    
    if (eBands==NULL)
       return NULL;
    
    /* Linear spacing (min_width) */
    for (i=0;i<low;i++)
-      eBands[i] = min_bins*i;
+      eBands[i] = i;
+   if (low>0)
+      offset = eBands[low-1]*res - bark_freq[lin-1];
    /* Spacing follows critical bands */
    for (i=0;i<high;i++)
    {
       int target = bark_freq[lin+i];
-      eBands[i+low] = (2*target+offset+res)/(2*res);
+      /* Round to an even value */
+      eBands[i+low] = (target+offset/2+res)/(2*res)*2;
       offset = eBands[i+low]*res - target;
    }
    /* Enforce the minimum spacing at the boundary */
    for (i=0;i<*nbEBands;i++)
-      if (eBands[i] < min_bins*i)
-         eBands[i] = min_bins*i;
-   eBands[*nbEBands] = (bark_freq[nBark]+res/2)/res;
-   eBands[*nbEBands+1] = frame_size;
-   if (eBands[*nbEBands] > eBands[*nbEBands+1])
-      eBands[*nbEBands] = eBands[*nbEBands+1];
+      if (eBands[i] < i)
+         eBands[i] = i;
+   /* Round to an even value */
+   eBands[*nbEBands] = (bark_freq[nBark]+res)/(2*res)*2;
+   if (eBands[*nbEBands] > frame_size)
+      eBands[*nbEBands] = frame_size;
    for (i=1;i<*nbEBands-1;i++)
    {
       if (eBands[i+1]-eBands[i] < eBands[i]-eBands[i-1])
       {
-         eBands[i] -= (2*eBands[i]-eBands[i-1]-eBands[i+1]+1)/2;
+         eBands[i] -= (2*eBands[i]-eBands[i-1]-eBands[i+1])/2;
       }
    }
-   /*for (i=0;i<*nbEBands+1;i++)
-      printf ("%d ", eBands[i]);
-   printf ("\n");
-   exit(1);*/
-   /* FIXME: Remove last band if too small */
+   /* Remove any empty bands. */
+   for (i=j=0;i<*nbEBands;i++)
+      if(eBands[i+1]>eBands[j])
+         eBands[++j]=eBands[i+1];
+   *nbEBands=j;
+
+   for (i=1;i<*nbEBands;i++)
+   {
+      /* Every band must be smaller than the last band. */
+      celt_assert(eBands[i]-eBands[i-1]<=eBands[*nbEBands]-eBands[*nbEBands-1]);
+      /* Each band must be no larger than twice the size of the previous one. */
+      celt_assert(eBands[i+1]-eBands[i]<=2*(eBands[i]-eBands[i-1]));
+   }
+
    return eBands;
 }
 
-static void compute_allocation_table(CELTMode *mode, int res)
+static void compute_allocation_table(CELTMode *mode)
 {
-   int i, j, nBark;
-   celt_int16 *allocVectors;
-
-   /* Find the number of critical bands supported by our sampling rate */
-   for (nBark=1;nBark<BARK_BANDS;nBark++)
-    if (bark_freq[nBark+1]*2 >= mode->Fs)
-       break;
+   int i, j;
+   unsigned char *allocVectors;
+   int maxBands = sizeof(eband5ms)/sizeof(eband5ms[0])-1;
 
    mode->nbAllocVectors = BITALLOC_SIZE;
-   allocVectors = (celt_int16 *) celt_alloc(sizeof(celt_int16)*(BITALLOC_SIZE*mode->nbEBands));
+   allocVectors = celt_alloc(sizeof(unsigned char)*(BITALLOC_SIZE*mode->nbEBands));
    if (allocVectors==NULL)
       return;
+
+   /* Check for standard mode */
+   if (mode->Fs == 400*(celt_int32)mode->shortMdctSize)
+   {
+      for (i=0;i<BITALLOC_SIZE*mode->nbEBands;i++)
+         allocVectors[i] = band_allocation[i];
+      mode->allocVectors = allocVectors;
+      return;
+   }
+   /* If not the standard mode, interpolate */
    /* Compute per-codec-band allocation from per-critical-band matrix */
    for (i=0;i<BITALLOC_SIZE;i++)
    {
-      celt_int32 current = 0;
-      int eband = 0;
-      for (j=0;j<nBark;j++)
+      for (j=0;j<mode->nbEBands;j++)
       {
-         int edge, low;
-         celt_int32 alloc;
-         edge = mode->eBands[eband+1]*res;
-         alloc = mode->mdctSize*band_allocation[i*BARK_BANDS+j];
-         if (edge < bark_freq[j+1])
+         int k;
+         for (k=0;k<maxBands;k++)
          {
-            int num, den;
-            num = alloc * (edge-bark_freq[j]);
-            den = bark_freq[j+1]-bark_freq[j];
-            low = (num+den/2)/den;
-            allocVectors[i*mode->nbEBands+eband] = (current+low+128)/256;
-            current=0;
-            eband++;
-            current += alloc-low;
-         } else {
-            current += alloc;
-         }   
+            if (400*(celt_int32)eband5ms[k] > mode->eBands[j]*(celt_int32)mode->Fs/mode->shortMdctSize)
+               break;
+         }
+         if (k>maxBands-1)
+            allocVectors[i*mode->nbEBands+j] = band_allocation[i*maxBands + maxBands-1];
+         else {
+            celt_int32 a0, a1;
+            a1 = mode->eBands[j]*(celt_int32)mode->Fs/mode->shortMdctSize - 400*(celt_int32)eband5ms[k-1];
+            a0 = 400*(celt_int32)eband5ms[k] - mode->eBands[j]*(celt_int32)mode->Fs/mode->shortMdctSize;
+            allocVectors[i*mode->nbEBands+j] = (a0*band_allocation[i*maxBands+k-1]
+                                             + a1*band_allocation[i*maxBands+k])/(a0+a1);
+         }
       }
-      allocVectors[i*mode->nbEBands+eband] = (current+128)/256;
    }
+
+   /*printf ("\n");
+   for (i=0;i<BITALLOC_SIZE;i++)
+   {
+      for (j=0;j<mode->nbEBands;j++)
+         printf ("%d ", allocVectors[i*mode->nbEBands+j]);
+      printf ("\n");
+   }
+   exit(0);*/
+
    mode->allocVectors = allocVectors;
 }
 
-#endif /* STATIC_MODES */
+#endif /* CUSTOM_MODES */
 
 CELTMode *celt_mode_create(celt_int32 Fs, int frame_size, int *error)
 {
    int i;
-#ifdef STDIN_TUNING
-   scanf("%d ", &MIN_BINS);
-   scanf("%d ", &BITALLOC_SIZE);
-   band_allocation = celt_alloc(sizeof(int)*BARK_BANDS*BITALLOC_SIZE);
-   for (i=0;i<BARK_BANDS*BITALLOC_SIZE;i++)
-   {
-      scanf("%d ", band_allocation+i);
-   }
-#endif
-#ifdef STATIC_MODES
-   const CELTMode *m = NULL;
+#ifdef CUSTOM_MODES
    CELTMode *mode=NULL;
+   int res;
+   celt_word16 *window;
+   celt_int16 *logN;
+   int LM;
    ALLOC_STACK;
 #if !defined(VAR_ARRAYS) && !defined(USE_ALLOCA)
    if (global_stack==NULL)
-   {
-      celt_free(global_stack);
       goto failure;
-   }
 #endif 
+#endif
+
+#ifndef CUSTOM_MODES_ONLY
    for (i=0;i<TOTAL_MODES;i++)
    {
-      if (Fs == static_mode_list[i]->Fs &&
-          frame_size == static_mode_list[i]->mdctSize)
+      int j;
+      for (j=0;j<4;j++)
       {
-         m = static_mode_list[i];
-         break;
+         if (Fs == static_mode_list[i]->Fs &&
+               (frame_size<<j) == static_mode_list[i]->shortMdctSize*static_mode_list[i]->nbShortMdcts)
+         {
+            if (error)
+               *error = CELT_OK;
+            return (CELTMode*)static_mode_list[i];
+         }
       }
    }
-   if (m == NULL)
-   {
-      celt_warning("Mode not included as part of the static modes");
-      if (error)
-         *error = CELT_BAD_ARG;
-      return NULL;
-   }
-   mode = (CELTMode*)celt_alloc(sizeof(CELTMode));
-   if (mode==NULL)
-      goto failure;
-   CELT_COPY(mode, m, 1);
-   mode->marker_start = MODEPARTIAL;
+#endif /* CUSTOM_MODES_ONLY */
+
+#ifndef CUSTOM_MODES
+   if (error)
+      *error = CELT_BAD_ARG;
+   return NULL;
 #else
-   int res;
-   CELTMode *mode=NULL;
-   celt_word16 *window;
-   ALLOC_STACK;
-#if !defined(VAR_ARRAYS) && !defined(USE_ALLOCA)
-   if (global_stack==NULL)
-   {
-      celt_free(global_stack);
-      goto failure;
-   }
-#endif 
 
    /* The good thing here is that permutation of the arguments will automatically be invalid */
    
-   if (Fs < 32000 || Fs > 96000)
+   if (Fs < 8000 || Fs > 96000)
    {
-      celt_warning("Sampling rate must be between 32 kHz and 96 kHz");
       if (error)
          *error = CELT_BAD_ARG;
       return NULL;
    }
-   if (frame_size < 64 || frame_size > 1024 || frame_size%2!=0)
+   if (frame_size < 40 || frame_size > 1024 || frame_size%2!=0)
    {
-      celt_warning("Only even frame sizes from 64 to 1024 are supported");
       if (error)
          *error = CELT_BAD_ARG;
       return NULL;
    }
-   res = (Fs+frame_size)/(2*frame_size);
-   
-   mode = (CELTMode *) celt_alloc(sizeof(CELTMode));
-   if (mode==NULL)
-      goto failure;
-   mode->marker_start = MODEPARTIAL;
-   mode->Fs = Fs;
-   mode->mdctSize = frame_size;
-   mode->ePredCoef = QCONST16(.8f,15);
+   /* Frames of less than 1ms are not supported. */
+   if ((celt_int32)frame_size*1000 < Fs)
+   {
+      if (error)
+         *error = CELT_BAD_ARG;
+      return NULL;
+   }
 
-   if (frame_size > 640 && (frame_size%16)==0)
+   if ((celt_int32)frame_size*75 >= Fs && (frame_size%16)==0)
    {
-     mode->nbShortMdcts = 8;
-   } else if (frame_size > 384 && (frame_size%8)==0)
+     LM = 3;
+   } else if ((celt_int32)frame_size*150 >= Fs && (frame_size%8)==0)
    {
-     mode->nbShortMdcts = 4;
-   } else if (frame_size > 384 && (frame_size%10)==0)
+     LM = 2;
+   } else if ((celt_int32)frame_size*300 >= Fs && (frame_size%4)==0)
    {
-     mode->nbShortMdcts = 5;
-   } else if (frame_size > 256 && (frame_size%6)==0)
-   {
-     mode->nbShortMdcts = 3;
-   } else if (frame_size > 256 && (frame_size%8)==0)
-   {
-     mode->nbShortMdcts = 4;
-   } else if (frame_size > 64 && (frame_size%4)==0)
-   {
-     mode->nbShortMdcts = 2;
-   } else if (frame_size > 128 && (frame_size%6)==0)
-   {
-     mode->nbShortMdcts = 3;
+     LM = 1;
    } else
    {
-     mode->nbShortMdcts = 1;
+     LM = 0;
    }
 
-   mode->eBands = compute_ebands(Fs, frame_size, mode->nbShortMdcts, &mode->nbEBands);
+   /* Shorts longer than 3.3ms are not supported. */
+   if ((celt_int32)(frame_size>>LM)*300 > Fs)
+   {
+      if (error)
+         *error = CELT_BAD_ARG;
+      return NULL;
+   }
+
+   mode = celt_alloc(sizeof(CELTMode));
+   if (mode==NULL)
+      goto failure;
+   mode->Fs = Fs;
+
+   /* Pre/de-emphasis depends on sampling rate. The "standard" pre-emphasis
+      is defined as A(z) = 1 - 0.85*z^-1 at 48 kHz. Other rates should
+      approximate that. */
+   if(Fs < 12000) /* 8 kHz */
+   {
+      mode->preemph[0] =  QCONST16(0.3500061035f, 15);
+      mode->preemph[1] = -QCONST16(0.1799926758f, 15);
+      mode->preemph[2] =  QCONST16(0.2719968125f, SIG_SHIFT); /* exact 1/preemph[3] */
+      mode->preemph[3] =  QCONST16(3.6765136719f, 13);
+   } else if(Fs < 24000) /* 16 kHz */
+   {
+      mode->preemph[0] =  QCONST16(0.6000061035f, 15);
+      mode->preemph[1] = -QCONST16(0.1799926758f, 15);
+      mode->preemph[2] =  QCONST16(0.4424998650f, SIG_SHIFT); /* exact 1/preemph[3] */
+      mode->preemph[3] =  QCONST16(2.2598876953f, 13);
+   } else if(Fs < 40000) /* 32 kHz */
+   {
+      mode->preemph[0] =  QCONST16(0.7799987793f, 15);
+      mode->preemph[1] = -QCONST16(0.1000061035f, 15);
+      mode->preemph[2] =  QCONST16(0.7499771125f, SIG_SHIFT); /* exact 1/preemph[3] */
+      mode->preemph[3] =  QCONST16(1.3333740234f, 13);
+   } else /* 48 kHz */
+   {
+      mode->preemph[0] =  QCONST16(0.8500061035f, 15);
+      mode->preemph[1] =  QCONST16(0.0f, 15);
+      mode->preemph[2] =  QCONST16(1.f, SIG_SHIFT);
+      mode->preemph[3] =  QCONST16(1.f, 13);
+   }
+
+   mode->maxLM = LM;
+   mode->nbShortMdcts = 1<<LM;
+   mode->shortMdctSize = frame_size/mode->nbShortMdcts;
+   res = (mode->Fs+mode->shortMdctSize)/(2*mode->shortMdctSize);
+
+   mode->eBands = compute_ebands(Fs, mode->shortMdctSize, res, &mode->nbEBands);
    if (mode->eBands==NULL)
       goto failure;
 
-   mode->pitchEnd = 4000*(celt_int32)frame_size/Fs;
+   mode->effEBands = mode->nbEBands;
+   while (mode->eBands[mode->effEBands] > mode->shortMdctSize)
+      mode->effEBands--;
    
    /* Overlap must be divisible by 4 */
-   if (mode->nbShortMdcts > 1)
-      mode->overlap = ((frame_size/mode->nbShortMdcts)>>2)<<2; 
-   else
-      mode->overlap = (frame_size>>3)<<2;
+   mode->overlap = ((mode->shortMdctSize>>2)<<2);
 
-   compute_allocation_table(mode, res);
+   compute_allocation_table(mode);
    if (mode->allocVectors==NULL)
       goto failure;
    
@@ -359,99 +367,67 @@ CELTMode *celt_mode_create(celt_int32 Fs, int frame_size, int *error)
       window[i] = Q15ONE*sin(.5*M_PI* sin(.5*M_PI*(i+.5)/mode->overlap) * sin(.5*M_PI*(i+.5)/mode->overlap));
 #else
    for (i=0;i<mode->overlap;i++)
-      window[i] = MIN32(32767,32768.*sin(.5*M_PI* sin(.5*M_PI*(i+.5)/mode->overlap) * sin(.5*M_PI*(i+.5)/mode->overlap)));
+      window[i] = MIN32(32767,floor(.5+32768.*sin(.5*M_PI* sin(.5*M_PI*(i+.5)/mode->overlap) * sin(.5*M_PI*(i+.5)/mode->overlap))));
 #endif
    mode->window = window;
 
-   mode->bits = (const celt_int16 **)compute_alloc_cache(mode, 1);
-   if (mode->bits==NULL)
+   logN = (celt_int16*)celt_alloc(mode->nbEBands*sizeof(celt_int16));
+   if (logN==NULL)
       goto failure;
 
-#endif /* !STATIC_MODES */
+   for (i=0;i<mode->nbEBands;i++)
+      logN[i] = log2_frac(mode->eBands[i+1]-mode->eBands[i], BITRES);
+   mode->logN = logN;
 
-   clt_mdct_init(&mode->mdct, 2*mode->mdctSize);
+   compute_pulse_cache(mode, mode->maxLM);
 
-   mode->shortMdctSize = mode->mdctSize/mode->nbShortMdcts;
-   clt_mdct_init(&mode->shortMdct, 2*mode->shortMdctSize);
-   mode->shortWindow = mode->window;
-   mode->prob = quant_prob_alloc(mode);
-   if ((mode->mdct.trig==NULL) || (mode->shortMdct.trig==NULL)
+   clt_mdct_init(&mode->mdct, 2*mode->shortMdctSize*mode->nbShortMdcts, mode->maxLM);
+   if ((mode->mdct.trig==NULL)
 #ifndef ENABLE_TI_DSPLIB55
-        || (mode->mdct.kfft==NULL) || (mode->shortMdct.kfft==NULL)
+         || (mode->mdct.kfft==NULL)
 #endif
-        || (mode->prob==NULL))
-     goto failure;
+   )
+      goto failure;
 
-   mode->marker_start = MODEVALID;
-   mode->marker_end   = MODEVALID;
    if (error)
       *error = CELT_OK;
+
    return mode;
 failure: 
    if (error)
-      *error = CELT_INVALID_MODE;
+      *error = CELT_ALLOC_FAIL;
    if (mode!=NULL)
       celt_mode_destroy(mode);
    return NULL;
+#endif /* !CUSTOM_MODES */
 }
 
 void celt_mode_destroy(CELTMode *mode)
 {
+#ifdef CUSTOM_MODES
    int i;
-   const celt_int16 *prevPtr = NULL;
    if (mode == NULL)
-   {
-      celt_warning("NULL passed to celt_mode_destroy");
       return;
-   }
-
-   if (mode->marker_start == MODEFREED || mode->marker_end == MODEFREED)
+#ifndef CUSTOM_MODES_ONLY
+   for (i=0;i<TOTAL_MODES;i++)
    {
-      celt_warning("Freeing a mode which has already been freed"); 
-      return;
-   }
-
-   if (mode->marker_start != MODEVALID && mode->marker_start != MODEPARTIAL)
-   {
-      celt_warning("This is not a valid CELT mode structure");
-      return;  
-   }
-   mode->marker_start = MODEFREED;
-#ifndef STATIC_MODES
-   if (mode->bits!=NULL)
-   {
-      for (i=0;i<mode->nbEBands;i++)
+      if (mode == static_mode_list[i])
       {
-         if (mode->bits[i] != prevPtr)
-         {
-            prevPtr = mode->bits[i];
-            celt_free((int*)mode->bits[i]);
-          }
+         return;
       }
-   }   
-   celt_free((int**)mode->bits);
-   celt_free((int*)mode->eBands);
-   celt_free((int*)mode->allocVectors);
+   }
+#endif /* CUSTOM_MODES_ONLY */
+   celt_free((celt_int16*)mode->eBands);
+   celt_free((celt_int16*)mode->allocVectors);
    
    celt_free((celt_word16*)mode->window);
+   celt_free((celt_int16*)mode->logN);
 
-#endif
+   celt_free((celt_int16*)mode->cache.index);
+   celt_free((unsigned char*)mode->cache.bits);
+   celt_free((unsigned char*)mode->cache.caps);
    clt_mdct_clear(&mode->mdct);
-   clt_mdct_clear(&mode->shortMdct);
-   quant_prob_free(mode->prob);
-   mode->marker_end = MODEFREED;
-   celt_free((CELTMode *)mode);
-}
 
-int check_mode(const CELTMode *mode)
-{
-   if (mode==NULL)
-      return CELT_INVALID_MODE;
-   if (mode->marker_start == MODEVALID && mode->marker_end == MODEVALID)
-      return CELT_OK;
-   if (mode->marker_start == MODEFREED || mode->marker_end == MODEFREED)
-      celt_warning("Using a mode that has already been freed");
-   else
-      celt_warning("This is not a valid CELT mode");
-   return CELT_INVALID_MODE;
+   celt_free((CELTMode *)mode);
+#endif
 }

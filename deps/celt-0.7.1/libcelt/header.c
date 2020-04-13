@@ -13,10 +13,6 @@
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
    
-   - Neither the name of the Xiph.org Foundation nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-   
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -51,22 +47,21 @@ _le_32 (celt_uint32 i)
    return ret;
 }
 
-int celt_header_init(CELTHeader *header, const CELTMode *m, int channels)
+int celt_header_init(CELTHeader *header, const CELTMode *m, int frame_size, int channels)
 {
-
-   if (check_mode(m) != CELT_OK)
-     return CELT_INVALID_MODE;
    if (header==NULL)
      return CELT_BAD_ARG;        
 
    CELT_COPY(header->codec_id, "CELT    ", 8);
    CELT_COPY(header->codec_version, "experimental        ", 20);
 
-   celt_mode_info(m, CELT_GET_BITSTREAM_VERSION, &header->version_id);
+   /* FIXME: Set that to zero when we freeze */
+   header->version_id = 0x80001000;
    header->header_size = 56;
    header->sample_rate = m->Fs;
    header->nb_channels = channels;
-   header->frame_size = m->mdctSize;
+   /*FIXME: This won't work for variable frame size */
+   header->frame_size = frame_size;
    header->overlap = m->overlap;
    header->bytes_per_packet = -1;
    header->extra_headers = 0;

@@ -18,10 +18,6 @@
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
    
-   - Neither the name of the Xiph.org Foundation nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-   
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -40,13 +36,19 @@
 #include "config.h"
 #endif
 
+/* Always enable postfilter for Opus */
+#if defined(OPUS_BUILD) && !defined(ENABLE_POSTFILTER)
+#define ENABLE_POSTFILTER
+#endif
+
 #include "pitch.h"
 #include "os_support.h"
 #include "modes.h"
 #include "stack_alloc.h"
 #include "mathops.h"
 
-void find_best_pitch(celt_word32 *xcorr, celt_word32 maxcorr, celt_word16 *y, int yshift, int len, int max_pitch, int best_pitch[2])
+static void find_best_pitch(celt_word32 *xcorr, celt_word32 maxcorr, celt_word16 *y,
+                            int yshift, int len, int max_pitch, int best_pitch[2])
 {
    int i, j;
    celt_word32 Syy=1;
@@ -68,14 +70,12 @@ void find_best_pitch(celt_word32 *xcorr, celt_word32 maxcorr, celt_word16 *y, in
       Syy = MAC16_16(Syy, y[j],y[j]);
    for (i=0;i<max_pitch;i++)
    {
-      float score;
       if (xcorr[i]>0)
       {
          celt_word16 num;
          celt_word32 xcorr16;
          xcorr16 = EXTRACT16(VSHR32(xcorr[i], xshift));
          num = MULT16_16_Q15(xcorr16,xcorr16);
-         score = num*1./Syy;
          if (MULT16_32_Q15(num,best_den[1]) > MULT16_32_Q15(best_num[1],Syy))
          {
             if (MULT16_32_Q15(num,best_den[0]) > MULT16_32_Q15(best_num[0],Syy))
@@ -98,61 +98,64 @@ void find_best_pitch(celt_word32 *xcorr, celt_word32 maxcorr, celt_word16 *y, in
    }
 }
 
-void pitch_downsample(const celt_sig * restrict x, celt_word16 * restrict x_lp, int len, int end, int _C, celt_sig * restrict xmem, celt_word16 * restrict filt_mem)
+#include "plc.h"
+void pitch_downsample(celt_sig * restrict x[], celt_word16 * restrict x_lp,
+      int len, int _C)
 {
    int i;
+   celt_word32 ac[5];
+   celt_word16 tmp=Q15ONE;
+   celt_word16 lpc[4], mem[4]={0,0,0,0};
    const int C = CHANNELS(_C);
    for (i=1;i<len>>1;i++)
-      x_lp[i] = SHR32(HALF32(HALF32(x[(2*i-1)*C]+x[(2*i+1)*C])+x[2*i*C]), SIG_SHIFT);
-   x_lp[0] = SHR32(HALF32(HALF32(*xmem+x[C])+x[0]), SIG_SHIFT);
-   *xmem = x[end-C];
+      x_lp[i] = SHR32(HALF32(HALF32(x[0][(2*i-1)]+x[0][(2*i+1)])+x[0][2*i]), SIG_SHIFT+3);
+   x_lp[0] = SHR32(HALF32(HALF32(x[0][1])+x[0][0]), SIG_SHIFT+3);
    if (C==2)
    {
       for (i=1;i<len>>1;i++)
-      x_lp[i] = SHR32(HALF32(HALF32(x[(2*i-1)*C+1]+x[(2*i+1)*C+1])+x[2*i*C+1]), SIG_SHIFT);
-      x_lp[0] += SHR32(HALF32(HALF32(x[C+1])+x[1]), SIG_SHIFT);
-      *xmem += x[end-C+1];
+         x_lp[i] += SHR32(HALF32(HALF32(x[1][(2*i-1)]+x[1][(2*i+1)])+x[1][2*i]), SIG_SHIFT+3);
+      x_lp[0] += SHR32(HALF32(HALF32(x[1][1])+x[1][0]), SIG_SHIFT+3);
    }
 
-#if 0
-   {
-      int j;
-      float ac[3]={0,0,0};
-      float ak[2];
-      float det;
-      celt_word16 mem[2];
-      for (i=0;i<3;i++)
-      {
-         for (j=0;j<(len>>1)-i;j++)
-         {
-            ac[i] += x_lp[j]*x_lp[j+i];
-         }
-      }
-      det = 1./(.1+ac[0]*ac[0]-ac[1]*ac[1]);
-      ak[0] = .9*det*(ac[0]*ac[1] - ac[1]*ac[2]);
-      ak[1] = .81*det*(-ac[1]*ac[1] + ac[0]*ac[2]);
-      /*printf ("%f %f %f\n", 1., -ak[0], -ak[1]);*/
-      mem[0]=filt_mem[0];
-      mem[1]=filt_mem[1];
-      filt_mem[0]=x_lp[(end>>1)-1];
-      filt_mem[1]=x_lp[(end>>1)-2];
-      for (j=0;j<len>>1;j++)
-      {
-         float tmp = x_lp[j];
-         x_lp[j] = x_lp[j] - ak[0]*mem[0] - ak[1]*mem[1];
-         mem[1]=mem[0];
-         mem[0]=tmp;
-      }
-   }
+   _celt_autocorr(x_lp, ac, NULL, 0,
+                  4, len>>1);
+
+   /* Noise floor -40 dB */
+#ifdef FIXED_POINT
+   ac[0] += SHR32(ac[0],13);
+#else
+   ac[0] *= 1.0001f;
 #endif
+   /* Lag windowing */
+   for (i=1;i<=4;i++)
+   {
+      /*ac[i] *= exp(-.5*(2*M_PI*.002*i)*(2*M_PI*.002*i));*/
+#ifdef FIXED_POINT
+      ac[i] -= MULT16_32_Q15(2*i*i, ac[i]);
+#else
+      ac[i] -= ac[i]*(.008f*i)*(.008f*i);
+#endif
+   }
+
+   _celt_lpc(lpc, ac, 4);
+   for (i=0;i<4;i++)
+   {
+      tmp = MULT16_16_Q15(QCONST16(.9f,15), tmp);
+      lpc[i] = MULT16_16_Q15(lpc[i], tmp);
+   }
+   fir(x_lp, lpc, x_lp, len>>1, 4, mem);
+
+   mem[0]=0;
+   lpc[0]=QCONST16(.8f,12);
+   fir(x_lp, lpc, x_lp, len>>1, 1, mem);
 
 }
 
-void pitch_search(const CELTMode *m, const celt_word16 * restrict x_lp, celt_word16 * restrict y, int len, int max_pitch, int *pitch, celt_sig *xmem)
+void pitch_search(const celt_word16 * restrict x_lp, celt_word16 * restrict y,
+                  int len, int max_pitch, int *pitch)
 {
    int i, j;
-   const int lag = MAX_PERIOD;
-   const int N = FRAMESIZE(m);
+   int lag;
    int best_pitch[2]={0};
    VARDECL(celt_word16, x_lp4);
    VARDECL(celt_word16, y_lp4);
@@ -162,6 +165,8 @@ void pitch_search(const CELTMode *m, const celt_word16 * restrict x_lp, celt_wor
    int shift=0;
 
    SAVE_STACK;
+
+   lag = len+max_pitch;
 
    ALLOC(x_lp4, len>>2, celt_word16);
    ALLOC(y_lp4, lag>>2, celt_word16);
@@ -174,7 +179,7 @@ void pitch_search(const CELTMode *m, const celt_word16 * restrict x_lp, celt_wor
       y_lp4[j] = y[2*j];
 
 #ifdef FIXED_POINT
-   shift = celt_ilog2(MAX16(celt_maxabs16(x_lp4, len>>2), celt_maxabs16(y_lp4, lag>>2)))-11;
+   shift = celt_ilog2(MAX16(1, MAX16(celt_maxabs16(x_lp4, len>>2), celt_maxabs16(y_lp4, lag>>2))))-11;
    if (shift>0)
    {
       for (j=0;j<len>>2;j++)
@@ -233,10 +238,136 @@ void pitch_search(const CELTMode *m, const celt_word16 * restrict x_lp, celt_wor
    }
    *pitch = 2*best_pitch[0]-offset;
 
-   CELT_MOVE(y, y+(N>>1), (lag-N)>>1);
-   CELT_MOVE(y+((lag-N)>>1), x_lp, N>>1);
-
    RESTORE_STACK;
-
-   /*printf ("%d\n", *pitch);*/
 }
+
+#ifdef ENABLE_POSTFILTER
+static const int second_check[16] = {0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2};
+celt_word16 remove_doubling(celt_word16 *x, int maxperiod, int minperiod,
+      int N, int *_T0, int prev_period, celt_word16 prev_gain)
+{
+   int k, i, T, T0;
+   celt_word16 g, g0;
+   celt_word16 pg;
+   celt_word32 xy,xx,yy;
+   celt_word32 xcorr[3];
+   celt_word32 best_xy, best_yy;
+   int offset;
+   int minperiod0;
+
+   minperiod0 = minperiod;
+   maxperiod /= 2;
+   minperiod /= 2;
+   *_T0 /= 2;
+   prev_period /= 2;
+   N /= 2;
+   x += maxperiod;
+   if (*_T0>=maxperiod)
+      *_T0=maxperiod-1;
+
+   T = T0 = *_T0;
+   xx=xy=yy=0;
+   for (i=0;i<N;i++)
+   {
+      xy = MAC16_16(xy, x[i], x[i-T0]);
+      xx = MAC16_16(xx, x[i], x[i]);
+      yy = MAC16_16(yy, x[i-T0],x[i-T0]);
+   }
+   best_xy = xy;
+   best_yy = yy;
+#ifdef FIXED_POINT
+      {
+         celt_word32 x2y2;
+         int sh, t;
+         x2y2 = 1+HALF32(MULT32_32_Q31(xx,yy));
+         sh = celt_ilog2(x2y2)>>1;
+         t = VSHR32(x2y2, 2*(sh-7));
+         g = g0 = VSHR32(MULT16_32_Q15(celt_rsqrt_norm(t), xy),sh+1);
+      }
+#else
+      g = g0 = xy/sqrt(1+xx*yy);
+#endif
+   /* Look for any pitch at T/k */
+   for (k=2;k<=15;k++)
+   {
+      int T1, T1b;
+      celt_word16 g1;
+      celt_word16 cont=0;
+      T1 = (2*T0+k)/(2*k);
+      if (T1 < minperiod)
+         break;
+      /* Look for another strong correlation at T1b */
+      if (k==2)
+      {
+         if (T1+T0>maxperiod)
+            T1b = T0;
+         else
+            T1b = T0+T1;
+      } else
+      {
+         T1b = (2*second_check[k]*T0+k)/(2*k);
+      }
+      xy=yy=0;
+      for (i=0;i<N;i++)
+      {
+         xy = MAC16_16(xy, x[i], x[i-T1]);
+         yy = MAC16_16(yy, x[i-T1], x[i-T1]);
+
+         xy = MAC16_16(xy, x[i], x[i-T1b]);
+         yy = MAC16_16(yy, x[i-T1b], x[i-T1b]);
+      }
+#ifdef FIXED_POINT
+      {
+         celt_word32 x2y2;
+         int sh, t;
+         x2y2 = 1+MULT32_32_Q31(xx,yy);
+         sh = celt_ilog2(x2y2)>>1;
+         t = VSHR32(x2y2, 2*(sh-7));
+         g1 = VSHR32(MULT16_32_Q15(celt_rsqrt_norm(t), xy),sh+1);
+      }
+#else
+      g1 = xy/sqrt(1+2.f*xx*1.f*yy);
+#endif
+      if (abs(T1-prev_period)<=1)
+         cont = prev_gain;
+      else if (abs(T1-prev_period)<=2 && 5*k*k < T0)
+         cont = HALF32(prev_gain);
+      else
+         cont = 0;
+      if (g1 > QCONST16(.3f,15) + MULT16_16_Q15(QCONST16(.4f,15),g0)-cont)
+      {
+         best_xy = xy;
+         best_yy = yy;
+         T = T1;
+         g = g1;
+      }
+   }
+   if (best_yy <= best_xy)
+      pg = Q15ONE;
+   else
+      pg = SHR32(frac_div32(best_xy,best_yy+1),16);
+
+   for (k=0;k<3;k++)
+   {
+      int T1 = T+k-1;
+      xy = 0;
+      for (i=0;i<N;i++)
+         xy = MAC16_16(xy, x[i], x[i-T1]);
+      xcorr[k] = xy;
+   }
+   if ((xcorr[2]-xcorr[0]) > MULT16_32_Q15(QCONST16(.7f,15),xcorr[1]-xcorr[0]))
+      offset = 1;
+   else if ((xcorr[0]-xcorr[2]) > MULT16_32_Q15(QCONST16(.7f,15),xcorr[1]-xcorr[2]))
+      offset = -1;
+   else
+      offset = 0;
+   if (pg > g)
+      pg = g;
+   *_T0 = 2*T+offset;
+
+   if (*_T0<minperiod0)
+      *_T0=minperiod0;
+   return pg;
+}
+
+#endif /* ENABLE_POSTFILTER */

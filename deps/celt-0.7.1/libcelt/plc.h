@@ -1,23 +1,17 @@
-/* Copyright (c) 2007-2008 CSIRO
-   Copyright (c) 2007-2009 Xiph.Org Foundation
+/* Copyright (c) 2009-2010 Xiph.Org Foundation
    Written by Jean-Marc Valin */
-/**
-   @file pitch.h
-   @brief Pitch analysis
- */
-
 /*
    Redistribution and use in source and binary forms, with or without
    modification, are permitted provided that the following conditions
    are met:
-   
+
    - Redistributions of source code must retain the above copyright
    notice, this list of conditions and the following disclaimer.
-   
+
    - Redistributions in binary form must reproduce the above copyright
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
-   
+
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -31,19 +25,31 @@
    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#ifndef PLC_H
+#define PLC_H
 
-#ifndef _PITCH_H
-#define _PITCH_H
+#include "arch.h"
 
-#include "modes.h"
+#define LPC_ORDER 24
 
-void pitch_downsample(celt_sig * restrict x[], celt_word16 * restrict x_lp,
-      int len, int _C);
+void _celt_lpc(celt_word16 *_lpc, const celt_word32 *ac, int p);
 
-void pitch_search(const celt_word16 * restrict x_lp, celt_word16 * restrict y,
-                  int len, int max_pitch, int *pitch);
+void fir(const celt_word16 *x,
+         const celt_word16 *num,
+         celt_word16 *y,
+         int N,
+         int ord,
+         celt_word16 *mem);
 
-celt_word16 remove_doubling(celt_word16 *x, int maxperiod, int minperiod,
-      int N, int *T0, int prev_period, celt_word16 prev_gain);
+void iir(const celt_word32 *x,
+         const celt_word16 *den,
+         celt_word32 *y,
+         int N,
+         int ord,
+         celt_word16 *mem);
 
-#endif
+
+void _celt_autocorr(const celt_word16 *x, celt_word32 *ac, const celt_word16 *window, int overlap, int lag, int n);
+
+
+#endif /* PLC_H */

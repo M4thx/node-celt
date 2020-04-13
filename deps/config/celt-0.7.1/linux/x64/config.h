@@ -14,19 +14,22 @@
 #define CELT_MAJOR_VERSION 0
 
 /* Version micro */
-#define CELT_MICRO_VERSION 1
+#define CELT_MICRO_VERSION 4
 
 /* Version minor */
-#define CELT_MINOR_VERSION 7
+#define CELT_MINOR_VERSION 11
 
 /* Complete version string */
-#define CELT_VERSION "0.7.1"
+#define CELT_VERSION "0.11.4"
 
-/* Compile as fixed-point */
-/* #undef DOUBLE_PRECISION */
+/* Custom modes */
+#define CUSTOM_MODES /**/
 
 /* Assertions */
 /* #undef ENABLE_ASSERTIONS */
+
+/* Postfilter */
+/* #undef ENABLE_POSTFILTER */
 
 /* Debug fixed-point implementation */
 /* #undef FIXED_DEBUG */
@@ -61,10 +64,10 @@
 /* Define to 1 if you have the `winmm' library (-lwinmm). */
 /* #undef HAVE_LIBWINMM */
 
-/* Define if you have C99's lrint function. */
+/* Define to 1 if you have the `lrint' function. */
 #define HAVE_LRINT 1
 
-/* Define if you have C99's lrintf function. */
+/* Define to 1 if you have the `lrintf' function. */
 #define HAVE_LRINTF 1
 
 /* Define to 1 if you have the <memory.h> header file. */
@@ -86,7 +89,7 @@
 /* #undef HAVE_SYS_AUDIOIO_H */
 
 /* Define to 1 if you have the <sys/soundcard.h> header file. */
-#define HAVE_SYS_SOUNDCARD_H 1
+/* #undef HAVE_SYS_SOUNDCARD_H */
 
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #define HAVE_SYS_STAT_H 1
@@ -97,15 +100,11 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #define HAVE_UNISTD_H 1
 
-/* Define to the sub-directory in which libtool stores uninstalled libraries.
-   */
+/* Define to the sub-directory where libtool stores uninstalled libraries. */
 #define LT_OBJDIR ".libs/"
 
-/* Compile as fixed-point */
-/* #undef MIXED_PRECISION */
-
-/* Use new PLC code */
-/* #undef NEW_PLC */
+/* We're part of Opus */
+/* #undef OPUS_BUILD */
 
 /* Define to the address where bug reports for this package should be sent. */
 #define PACKAGE_BUGREPORT ""
@@ -129,16 +128,13 @@
 #define SIZEOF_INT 4
 
 /* The size of `long', as computed by sizeof. */
-#define SIZEOF_LONG 8
+#define SIZEOF_LONG 4
 
 /* The size of `long long', as computed by sizeof. */
 #define SIZEOF_LONG_LONG 8
 
 /* The size of `short', as computed by sizeof. */
 #define SIZEOF_SHORT 2
-
-/* Static modes */
-/* #undef STATIC_MODES */
 
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
@@ -147,7 +143,7 @@
 /* #undef USE_ALLOCA */
 
 /* Use C99 variable-size arrays */
-#define VAR_ARRAYS /**/
+/* #undef VAR_ARRAYS */
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */
@@ -182,4 +178,27 @@
 #if defined __SUNPRO_CC && !defined __RESTRICT
 # define _Restrict
 # define __restrict__
+#endif
+
+// Required for compat with Valve.
+#define OPUS_BUILD 1
+
+// Slim down the binary.
+#define CUSTOM_MODES_ONLY 1
+
+// alloca on win32, vararrays on everything else we support.
+#ifdef _WIN32
+#define USE_ALLOCA 1
+#else
+#define VAR_ARRAYS 1
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4018)// signed/unsigned mismatch
+#pragma warning(disable : 4244)// conversion from 'double' to 'celt_word16', possible loss of data
+#pragma warning(disable : 4267)// conversion from 'size_t' to 'int', possible loss of data
+#pragma warning(disable : 4305)// truncation from 'double' to 'const float'
+#pragma warning(disable : 4311)// pointer truncation from 'char *' to 'long'
+#pragma warning(disable : 4554)// check operator precedence for possible error; use parentheses to clarify precedence
+#pragma warning(disable : 4996)// This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
 #endif

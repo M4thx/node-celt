@@ -13,10 +13,6 @@
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
    
-   - Neither the name of the Xiph.org Foundation nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-   
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -43,12 +39,15 @@
    and scaling in many places. 
 */
 
+#ifndef SKIP_CONFIG_H
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+#endif
 
 #include "mdct.h"
-#include "kfft_double.h"
+#include "kiss_fft.h"
+#include "_kiss_fft_guts.h"
 #include <math.h>
 #include "os_support.h"
 #include "mathops.h"
@@ -58,53 +57,71 @@
 #define M_PI 3.141592653
 #endif
 
-void clt_mdct_init(mdct_lookup *l,int N)
+#ifdef CUSTOM_MODES
+
+void clt_mdct_init(mdct_lookup *l,int N, int maxshift)
 {
    int i;
-   int N2;
+   int N4, N2;
+   kiss_twiddle_scalar *trig;
    l->n = N;
    N2 = N>>1;
-   l->kfft = cpx32_fft_alloc(N>>2);
+   N4 = N>>2;
+   l->maxshift = maxshift;
+   for (i=0;i<=maxshift;i++)
+   {
+      if (i==0)
+         l->kfft[i] = kiss_fft_alloc(N>>2>>i, 0, 0);
+      else
+         l->kfft[i] = kiss_fft_alloc_twiddles(N>>2>>i, 0, 0, l->kfft[0]);
 #ifndef ENABLE_TI_DSPLIB55
-   if (l->kfft==NULL)
-     return;
+      if (l->kfft[i]==NULL)
+         return;
 #endif
-   l->trig = (kiss_twiddle_scalar*)celt_alloc(N2*sizeof(kiss_twiddle_scalar));
+   }
+   l->trig = trig = (kiss_twiddle_scalar*)celt_alloc((N4+1)*sizeof(kiss_twiddle_scalar));
    if (l->trig==NULL)
      return;
    /* We have enough points that sine isn't necessary */
 #if defined(FIXED_POINT)
-#if defined(DOUBLE_PRECISION) & !defined(MIXED_PRECISION)
-   for (i=0;i<N2;i++)
-      l->trig[i] = SAMP_MAX*cos(2*M_PI*(i+1./8.)/N);
+   for (i=0;i<=N4;i++)
+      trig[i] = TRIG_UPSCALE*celt_cos_norm(DIV32(ADD32(SHL32(EXTEND32(i),17),N2),N));
 #else
-   for (i=0;i<N2;i++)
-      l->trig[i] = TRIG_UPSCALE*celt_cos_norm(DIV32(ADD32(SHL32(EXTEND32(i),17),16386),N));
-#endif
-#else
-   for (i=0;i<N2;i++)
-      l->trig[i] = cos(2*M_PI*(i+1./8.)/N);
+   for (i=0;i<=N4;i++)
+      trig[i] = (kiss_twiddle_scalar)cos(2*M_PI*i/N);
 #endif
 }
 
 void clt_mdct_clear(mdct_lookup *l)
 {
-   cpx32_fft_free(l->kfft);
-   celt_free(l->trig);
+   int i;
+   for (i=0;i<=l->maxshift;i++)
+      kiss_fft_free(l->kfft[i]);
+   celt_free((kiss_twiddle_scalar*)l->trig);
 }
 
-void clt_mdct_forward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar * restrict out, const celt_word16 *window, int overlap)
+#endif /* CUSTOM_MODES */
+
+void clt_mdct_forward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar * restrict out, const celt_word16 *window, int overlap, int shift)
 {
    int i;
    int N, N2, N4;
+   kiss_twiddle_scalar sine;
    VARDECL(kiss_fft_scalar, f);
    SAVE_STACK;
    N = l->n;
+   N >>= shift;
    N2 = N>>1;
    N4 = N>>2;
    ALLOC(f, N2, kiss_fft_scalar);
-   
-   /* Consider the input to be compused of four blocks: [a, b, c, d] */
+   /* sin(x) ~= x here */
+#ifdef FIXED_POINT
+   sine = TRIG_UPSCALE*(QCONST16(0.7853981f, 15)+N2)/N;
+#else
+   sine = (kiss_twiddle_scalar)2*M_PI*(.125f)/N;
+#endif
+
+   /* Consider the input to be composed of four blocks: [a, b, c, d] */
    /* Window, shuffle, fold */
    {
       /* Temp pointers to make it really clear to the compiler what we're doing */
@@ -147,20 +164,22 @@ void clt_mdct_forward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar
    /* Pre-rotation */
    {
       kiss_fft_scalar * restrict yp = out;
-      kiss_fft_scalar *t = &l->trig[0];
+      const kiss_twiddle_scalar *t = &l->trig[0];
       for(i=0;i<N4;i++)
       {
-         kiss_fft_scalar re, im;
+         kiss_fft_scalar re, im, yr, yi;
          re = yp[0];
          im = yp[1];
-         *yp++ = -S_MUL(re,t[0])  +  S_MUL(im,t[N4]);
-         *yp++ = -S_MUL(im,t[0])  -  S_MUL(re,t[N4]);
-         t++;
+         yr = -S_MUL(re,t[i<<shift])  -  S_MUL(im,t[(N4-i)<<shift]);
+         yi = -S_MUL(im,t[i<<shift])  +  S_MUL(re,t[(N4-i)<<shift]);
+         /* works because the cos is nearly one */
+         *yp++ = yr + S_MUL(yi,sine);
+         *yp++ = yi - S_MUL(yr,sine);
       }
    }
 
    /* N/4 complex FFT, down-scales by 4/N */
-   cpx32_fft(l->kfft, out, f, N4);
+   kiss_fft(l->kfft[shift], (kiss_fft_cpx *)out, (kiss_fft_cpx *)f);
 
    /* Post-rotate */
    {
@@ -168,34 +187,45 @@ void clt_mdct_forward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar
       const kiss_fft_scalar * restrict fp = f;
       kiss_fft_scalar * restrict yp1 = out;
       kiss_fft_scalar * restrict yp2 = out+N2-1;
-      kiss_fft_scalar *t = &l->trig[0];
+      const kiss_twiddle_scalar *t = &l->trig[0];
       /* Temp pointers to make it really clear to the compiler what we're doing */
       for(i=0;i<N4;i++)
       {
-         *yp1 = -S_MUL(fp[1],t[N4]) + S_MUL(fp[0],t[0]);
-         *yp2 = -S_MUL(fp[0],t[N4]) - S_MUL(fp[1],t[0]);
+         kiss_fft_scalar yr, yi;
+         yr = S_MUL(fp[1],t[(N4-i)<<shift]) + S_MUL(fp[0],t[i<<shift]);
+         yi = S_MUL(fp[0],t[(N4-i)<<shift]) - S_MUL(fp[1],t[i<<shift]);
+         /* works because the cos is nearly one */
+         *yp1 = yr - S_MUL(yi,sine);
+         *yp2 = yi + S_MUL(yr,sine);;
          fp += 2;
          yp1 += 2;
          yp2 -= 2;
-         t++;
       }
    }
    RESTORE_STACK;
 }
 
 
-void clt_mdct_backward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar * restrict out, const celt_word16 * restrict window, int overlap)
+void clt_mdct_backward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar * restrict out, const celt_word16 * restrict window, int overlap, int shift)
 {
    int i;
    int N, N2, N4;
+   kiss_twiddle_scalar sine;
    VARDECL(kiss_fft_scalar, f);
    VARDECL(kiss_fft_scalar, f2);
    SAVE_STACK;
    N = l->n;
+   N >>= shift;
    N2 = N>>1;
    N4 = N>>2;
    ALLOC(f, N2, kiss_fft_scalar);
    ALLOC(f2, N2, kiss_fft_scalar);
+   /* sin(x) ~= x here */
+#ifdef FIXED_POINT
+   sine = TRIG_UPSCALE*(QCONST16(0.7853981f, 15)+N2)/N;
+#else
+   sine = (kiss_twiddle_scalar)2*M_PI*(.125f)/N;
+#endif
    
    /* Pre-rotate */
    {
@@ -203,34 +233,39 @@ void clt_mdct_backward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scala
       const kiss_fft_scalar * restrict xp1 = in;
       const kiss_fft_scalar * restrict xp2 = in+N2-1;
       kiss_fft_scalar * restrict yp = f2;
-      kiss_fft_scalar *t = &l->trig[0];
+      const kiss_twiddle_scalar *t = &l->trig[0];
       for(i=0;i<N4;i++) 
       {
-         *yp++ = -S_MUL(*xp2, t[0])  - S_MUL(*xp1,t[N4]);
-         *yp++ =  S_MUL(*xp2, t[N4]) - S_MUL(*xp1,t[0]);
+         kiss_fft_scalar yr, yi;
+         yr = -S_MUL(*xp2, t[i<<shift]) + S_MUL(*xp1,t[(N4-i)<<shift]);
+         yi =  -S_MUL(*xp2, t[(N4-i)<<shift]) - S_MUL(*xp1,t[i<<shift]);
+         /* works because the cos is nearly one */
+         *yp++ = yr - S_MUL(yi,sine);
+         *yp++ = yi + S_MUL(yr,sine);
          xp1+=2;
          xp2-=2;
-         t++;
       }
    }
 
    /* Inverse N/4 complex FFT. This one should *not* downscale even in fixed-point */
-   cpx32_ifft(l->kfft, f2, f, N4);
+   kiss_ifft(l->kfft[shift], (kiss_fft_cpx *)f2, (kiss_fft_cpx *)f);
    
    /* Post-rotate */
    {
       kiss_fft_scalar * restrict fp = f;
-      kiss_fft_scalar *t = &l->trig[0];
+      const kiss_twiddle_scalar *t = &l->trig[0];
 
       for(i=0;i<N4;i++)
       {
-         kiss_fft_scalar re, im;
+         kiss_fft_scalar re, im, yr, yi;
          re = fp[0];
          im = fp[1];
          /* We'd scale up by 2 here, but instead it's done when mixing the windows */
-         *fp++ = S_MUL(re,*t) + S_MUL(im,t[N4]);
-         *fp++ = S_MUL(im,*t) - S_MUL(re,t[N4]);
-         t++;
+         yr = S_MUL(re,t[i<<shift]) - S_MUL(im,t[(N4-i)<<shift]);
+         yi = S_MUL(im,t[i<<shift]) + S_MUL(re,t[(N4-i)<<shift]);
+         /* works because the cos is nearly one */
+         *fp++ = yr - S_MUL(yi,sine);
+         *fp++ = yi + S_MUL(yr,sine);
       }
    }
    /* De-shuffle the components for the middle of the window only */
@@ -246,7 +281,7 @@ void clt_mdct_backward(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scala
          fp2 -= 2;
       }
    }
-
+   out -= (N2-overlap)>>1;
    /* Mirror on both sides for TDAC */
    {
       kiss_fft_scalar * restrict fp1 = f2+N4-1;

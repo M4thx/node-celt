@@ -13,10 +13,6 @@
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
    
-   - Neither the name of the Xiph.org Foundation nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-   
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -41,7 +37,7 @@
 #include <math.h>
 #include <string.h>
 
-#define MAX_PACKET 1024
+#define MAX_PACKET 1275
 
 int main(int argc, char *argv[])
 {
@@ -57,7 +53,7 @@ int main(int argc, char *argv[])
    unsigned char data[MAX_PACKET];
    int rate;
    int complexity;
-#if !(defined (FIXED_POINT) && defined(STATIC_MODES))
+#if !(defined (FIXED_POINT) && !defined(CUSTOM_MODES)) && defined(RESYNTH)
    int i;
    double rmsd = 0;
 #endif
@@ -76,14 +72,12 @@ int main(int argc, char *argv[])
    channels = atoi(argv[2]);
    frame_size = atoi(argv[3]);
    mode = celt_mode_create(rate, frame_size, NULL);
-   celt_mode_info(mode, CELT_GET_LOOKAHEAD, &skip);
-   
    if (mode == NULL)
    {
       fprintf(stderr, "failed to create a mode\n");
       return 1;
    }
-   
+
    bytes_per_packet = atoi(argv[4]);
    if (bytes_per_packet < 0 || bytes_per_packet > MAX_PACKET)
    {
@@ -107,18 +101,19 @@ int main(int argc, char *argv[])
       return 1;
    }
    
-   enc = celt_encoder_create(mode, channels, &err);
+   enc = celt_encoder_create_custom(mode, channels, &err);
    if (err != 0)
    {
       fprintf(stderr, "Failed to create the encoder: %s\n", celt_strerror(err));
       return 1;
    }
-   dec = celt_decoder_create(mode, channels, &err);
+   dec = celt_decoder_create_custom(mode, channels, &err);
    if (err != 0)
    {
       fprintf(stderr, "Failed to create the decoder: %s\n", celt_strerror(err));
       return 1;
    }
+   celt_decoder_ctl(dec, CELT_GET_LOOKAHEAD(&skip));
 
    if (argc>7)
    {
@@ -126,20 +121,19 @@ int main(int argc, char *argv[])
       celt_encoder_ctl(enc,CELT_SET_COMPLEXITY(complexity));
    }
    
-   celt_mode_info(mode, CELT_GET_FRAME_SIZE, &frame_size);
    in = (celt_int16*)malloc(frame_size*channels*sizeof(celt_int16));
    out = (celt_int16*)malloc(frame_size*channels*sizeof(celt_int16));
+
    while (!feof(fin))
    {
+      int ret;
       err = fread(in, sizeof(short), frame_size*channels, fin);
       if (feof(fin))
          break;
-      len = celt_encode(enc, in, in, data, bytes_per_packet);
+      len = celt_encode(enc, in, frame_size, data, bytes_per_packet);
       if (len <= 0)
-      {
-         fprintf (stderr, "celt_encode() returned %d\n", len);
-         return 1;
-      }
+         fprintf (stderr, "celt_encode() failed: %s\n", celt_strerror(len));
+
       /* This is for simulating bit errors */
 #if 0
       int errors = 0;
@@ -162,26 +156,29 @@ int main(int argc, char *argv[])
       else if (errors%2 == 1)
          data[rand()%8] ^= 1<<rand()%8;
 #endif
+
 #if 1 /* Set to zero to use the encoder's output instead */
       /* This is to simulate packet loss */
       if (argc==9 && rand()%1000<atoi(argv[argc-3]))
       /*if (errors && (errors%2==0))*/
-         celt_decode(dec, NULL, len, out);
+         ret = celt_decode(dec, NULL, len, out, frame_size);
       else
-         celt_decode(dec, data, len, out);
+         ret = celt_decode(dec, data, len, out, frame_size);
+      if (ret < 0)
+         fprintf(stderr, "celt_decode() failed: %s\n", celt_strerror(ret));
 #else
-      for (i=0;i<frame_size*channels;i++)
+      for (i=0;i<ret*channels;i++)
          out[i] = in[i];
 #endif
-#if !(defined (FIXED_POINT) && defined(STATIC_MODES))
-      for (i=0;i<frame_size*channels;i++)
+#if !(defined (FIXED_POINT) && !defined(CUSTOM_MODES)) && defined(RESYNTH)
+      for (i=0;i<ret*channels;i++)
       {
          rmsd += (in[i]-out[i])*1.0*(in[i]-out[i]);
          /*out[i] -= in[i];*/
       }
 #endif
       count++;
-      fwrite(out+skip, sizeof(short), (frame_size-skip)*channels, fout);
+      fwrite(out+skip*channels, sizeof(short), (ret-skip)*channels, fout);
       skip = 0;
    }
    PRINT_MIPS(stderr);
@@ -190,7 +187,10 @@ int main(int argc, char *argv[])
    celt_decoder_destroy(dec);
    fclose(fin);
    fclose(fout);
-#if !(defined (FIXED_POINT) && defined(STATIC_MODES))
+   celt_mode_destroy(mode);
+   free(in);
+   free(out);
+#if !(defined (FIXED_POINT) && !defined(CUSTOM_MODES)) && defined(RESYNTH)
    if (rmsd > 0)
    {
       rmsd = sqrt(rmsd/(1.0*frame_size*channels*count));
@@ -201,9 +201,6 @@ int main(int argc, char *argv[])
       fprintf (stderr, "Encoder matches decoder!!\n");
    }
 #endif
-   celt_mode_destroy(mode);
-   free(in);
-   free(out);
    return 0;
 }
 
