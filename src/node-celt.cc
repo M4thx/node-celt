@@ -36,6 +36,7 @@ protected:
 		if (decoder != NULL)
 			return;
 		decoder = celt_decoder_create_custom(mode, 1, NULL);
+		celt_decoder_ctl(decoder, CELT_RESET_STATE_REQUEST, nullptr);
 	}
 
 public:
